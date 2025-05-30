@@ -1,0 +1,772 @@
+#!/bin/bash
+
+# Comprehensive test script for the Enhanced GCP IAM Tool
+# Usage: ./test-iam-tool.sh [OPTIONS] [path_to_main_script]
+
+set -euo pipefail
+
+# Colors for test output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Test counters
+TESTS_TOTAL=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+
+# Configuration variables
+SCRIPT_PATH=""
+TEST_RESULTS_FILE=""
+CLEANUP_ON_EXIT=true
+
+# Test result tracking
+TEST_RESULTS=()
+
+# Track all files created during testing for cleanup
+CREATED_FILES=()
+
+# Function to display usage
+usage() {
+    echo "Comprehensive test script for the Enhanced GCP IAM Tool"
+    echo ""
+    echo "Usage: $0 [OPTIONS] [path_to_main_script]"
+    echo ""
+    echo "Options:"
+    echo "  -r, --results FILE    Write test results to FILE"
+    echo "  --no-cleanup         Don't clean up test files after completion"
+    echo "  -h, --help           Show this help message"
+    echo ""
+    echo "Arguments:"
+    echo "  path_to_main_script  Path to gcp-iam-util (default: ./gcp-iam-util)"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Run tests with default script"
+    echo "  $0 /path/to/gcp-iam-util              # Run tests with specific script"
+    echo "  $0 -r test-results.txt               # Save results to file"
+    echo "  $0 --no-cleanup -r results.txt       # Keep test files and save results"
+}
+
+# Function to cleanup on exit
+cleanup_on_exit() {
+    local exit_code=$?
+    if [ "$CLEANUP_ON_EXIT" = true ]; then
+        cleanup_all_files
+    else
+        echo ""
+        echo -e "${YELLOW}Cleanup skipped. Test files preserved.${NC}"
+        if [ ${#CREATED_FILES[@]} -gt 0 ]; then
+            echo -e "${BLUE}Created files:${NC}"
+            for file in "${CREATED_FILES[@]}"; do
+                if [ -f "$file" ]; then
+                    echo -e "  $file"
+                fi
+            done
+        fi
+    fi
+    exit $exit_code
+}
+
+# Set trap for cleanup
+trap cleanup_on_exit EXIT
+
+# Function to track created files
+track_file() {
+    local file="$1"
+    CREATED_FILES+=("$file")
+}
+
+# Function to track output files that will be created by the IAM tool
+track_output_file() {
+    local file="$1"
+    # Only track if the file doesn't already exist
+    if [ ! -f "$file" ]; then
+        CREATED_FILES+=("$file")
+    fi
+}
+
+# Function to print test header
+print_test_header() {
+    echo ""
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}$1${NC}"
+    echo -e "${CYAN}======================================${NC}"
+}
+
+# Function to run a test
+run_test() {
+    local test_name="$1"
+    local expected_exit_code="$2"
+    shift 2
+    local test_command=("$@")
+    
+    TESTS_TOTAL=$((TESTS_TOTAL + 1))
+    
+    echo ""
+    echo -e "${BLUE}Test $TESTS_TOTAL: $test_name${NC}"
+    echo -e "${BLUE}Command: ${test_command[*]}${NC}"
+    
+    # Run the command and capture output and exit code
+    local output
+    local actual_exit_code=0
+    output=$("${test_command[@]}" 2>&1) || actual_exit_code=$?
+    
+    if [ $actual_exit_code -eq $expected_exit_code ]; then
+        echo -e "${GREEN}✅ PASS - Exit code: $actual_exit_code${NC}"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        TEST_RESULTS+=("PASS: $test_name")
+    else
+        echo -e "${RED}❌ FAIL - Expected: $expected_exit_code, Got: $actual_exit_code${NC}"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        
+        # Store detailed error information
+        local error_details="FAIL: $test_name (expected $expected_exit_code, got $actual_exit_code)"
+        error_details+="\n    Command: ${test_command[*]}"
+        if [ -n "$output" ]; then
+            error_details+="\n    Error Output:"
+            # Limit output to first 10 lines and truncate long lines
+            local formatted_output=$(echo "$output" | head -10 | cut -c1-120)
+            while IFS= read -r line; do
+                error_details+="\n      $line"
+            done <<< "$formatted_output"
+            if [ $(echo "$output" | wc -l) -gt 10 ]; then
+                error_details+="\n      ... (output truncated)"
+            fi
+        fi
+        TEST_RESULTS+=("$error_details")
+    fi
+}
+
+# Function to run a test with output capture
+run_test_with_output() {
+    local test_name="$1"
+    local expected_exit_code="$2"
+    local expected_pattern="$3"
+    shift 3
+    local test_command=("$@")
+    
+    TESTS_TOTAL=$((TESTS_TOTAL + 1))
+    
+    echo ""
+    echo -e "${BLUE}Test $TESTS_TOTAL: $test_name${NC}"
+    echo -e "${BLUE}Command: ${test_command[*]}${NC}"
+    
+    # Run the command and capture output and exit code
+    local output
+    local actual_exit_code=0
+    output=$("${test_command[@]}" 2>&1) || actual_exit_code=$?
+    
+    local pattern_match=false
+    if [[ "$output" =~ $expected_pattern ]]; then
+        pattern_match=true
+    fi
+    
+    if [ $actual_exit_code -eq $expected_exit_code ] && [ "$pattern_match" = true ]; then
+        echo -e "${GREEN}✅ PASS - Exit code: $actual_exit_code, Pattern found${NC}"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+        TEST_RESULTS+=("PASS: $test_name")
+    else
+        echo -e "${RED}❌ FAIL - Expected exit: $expected_exit_code, Got: $actual_exit_code${NC}"
+        echo -e "${RED}       Expected pattern: $expected_pattern${NC}"
+        echo -e "${RED}       Pattern match: $pattern_match${NC}"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        
+        # Store detailed error information
+        local error_details="FAIL: $test_name"
+        error_details+="\n    Expected exit code: $expected_exit_code, Got: $actual_exit_code"
+        error_details+="\n    Expected pattern: $expected_pattern"
+        error_details+="\n    Pattern match: $pattern_match"
+        error_details+="\n    Command: ${test_command[*]}"
+        if [ -n "$output" ]; then
+            error_details+="\n    Actual Output:"
+            # Limit output to first 10 lines and truncate long lines
+            local formatted_output=$(echo "$output" | head -10 | cut -c1-120)
+            while IFS= read -r line; do
+                error_details+="\n      $line"
+            done <<< "$formatted_output"
+            if [ $(echo "$output" | wc -l) -gt 10 ]; then
+                error_details+="\n      ... (output truncated)"
+            fi
+        fi
+        TEST_RESULTS+=("$error_details")
+        
+        # Show output for debugging
+        echo -e "${YELLOW}Output:${NC}"
+        echo "$output" | head -5
+    fi
+}
+
+# Function to create test files
+create_test_files() {
+    echo ""
+    echo -e "${BLUE}Creating test files...${NC}"
+    
+    # Create test permission files
+    cat > test_perms_small.txt << 'EOF'
+resourcemanager.projects.get
+resourcemanager.projects.list
+iam.serviceAccounts.get
+EOF
+    track_file "test_perms_small.txt"
+
+    cat > test_perms_medium.txt << 'EOF'
+resourcemanager.projects.get
+resourcemanager.projects.list
+resourcemanager.projects.create
+iam.serviceAccounts.get
+iam.serviceAccounts.list
+compute.instances.get
+EOF
+    track_file "test_perms_medium.txt"
+
+    cat > test_perms_large.txt << 'EOF'
+resourcemanager.projects.get
+resourcemanager.projects.list
+resourcemanager.projects.create
+resourcemanager.projects.delete
+iam.serviceAccounts.get
+iam.serviceAccounts.list
+iam.serviceAccounts.create
+iam.serviceAccounts.delete
+iam.roles.get
+iam.roles.list
+compute.instances.get
+compute.instances.list
+compute.instances.create
+compute.instances.delete
+storage.buckets.get
+storage.buckets.list
+EOF
+    track_file "test_perms_large.txt"
+
+    # Create additional test files for multi-target scenarios
+    cat > test_perms_target1.txt << 'EOF'
+resourcemanager.projects.get
+resourcemanager.projects.list
+iam.serviceAccounts.get
+compute.instances.get
+EOF
+    track_file "test_perms_target1.txt"
+
+    cat > test_perms_target2.txt << 'EOF'
+resourcemanager.projects.create
+iam.serviceAccounts.list
+iam.serviceAccounts.create
+compute.instances.list
+EOF
+    track_file "test_perms_target2.txt"
+
+    cat > test_perms_target3.txt << 'EOF'
+storage.buckets.get
+storage.buckets.list
+iam.roles.get
+iam.roles.list
+EOF
+    track_file "test_perms_target3.txt"
+
+    # Create combined permissions that span multiple targets
+    cat > test_perms_spanning.txt << 'EOF'
+resourcemanager.projects.get
+iam.serviceAccounts.list
+storage.buckets.get
+EOF
+    track_file "test_perms_spanning.txt"
+
+    # Create semicolon-separated file
+    echo "resourcemanager.projects.get;resourcemanager.projects.list;iam.serviceAccounts.get" > test_perms_semicolon.txt
+    track_file "test_perms_semicolon.txt"
+    
+    # Create empty file
+    touch test_perms_empty.txt
+    track_file "test_perms_empty.txt"
+    
+    # Create duplicate permissions file for deduplication testing
+    cat > test_perms_duplicates.txt << 'EOF'
+resourcemanager.projects.get
+resourcemanager.projects.get
+resourcemanager.projects.list
+iam.serviceAccounts.get
+iam.serviceAccounts.get
+EOF
+    track_file "test_perms_duplicates.txt"
+
+    echo -e "${GREEN}Test files created${NC}"
+}
+
+# Function to cleanup test files (legacy - kept for compatibility)
+cleanup_test_files() {
+    cleanup_all_files
+}
+
+# Function to cleanup all created files
+cleanup_all_files() {
+    echo ""
+    echo -e "${BLUE}Cleaning up all test files...${NC}"
+    
+    local cleaned_count=0
+    local total_files=${#CREATED_FILES[@]}
+    
+    # Clean up tracked files
+    if [ ${#CREATED_FILES[@]} -gt 0 ]; then
+        for file in "${CREATED_FILES[@]}"; do
+            if [ -f "$file" ]; then
+                rm -f "$file" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+            fi
+        done
+    fi
+    
+    # Clean up any additional files that might have been created
+    # (in case some weren't tracked properly)
+    for pattern in "test_perms_*.txt" "test_missing_*.txt" "test_output_*.txt" "test_integration_*.txt" "test_role_*.txt" "test_mixed_*.txt" "test_readonly.txt"; do
+        for file in $pattern; do
+            if [ -f "$file" ]; then
+                # Check if file is already tracked (only if array is not empty)
+                local already_tracked=false
+                if [ ${#CREATED_FILES[@]} -gt 0 ]; then
+                    for tracked_file in "${CREATED_FILES[@]}"; do
+                        if [ "$file" = "$tracked_file" ]; then
+                            already_tracked=true
+                            break
+                        fi
+                    done
+                fi
+                
+                if [ "$already_tracked" = false ]; then
+                    rm -f "$file" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+                fi
+            fi
+        done
+    done
+    
+    # Clean up files with spaces
+    rm -f "test file with spaces.txt" 2>/dev/null && cleaned_count=$((cleaned_count + 1))
+    
+    if [ $total_files -gt 0 ]; then
+        echo -e "${GREEN}Cleanup complete - removed $cleaned_count files${NC}"
+    else
+        echo -e "${GREEN}Cleanup complete${NC}"
+    fi
+}
+
+# Function to check prerequisites
+check_prerequisites() {
+    echo -e "${BLUE}Checking prerequisites...${NC}"
+    
+    # Check if main script exists
+    if [ ! -f "$SCRIPT_PATH" ]; then
+        echo -e "${RED}Error: Script not found at $SCRIPT_PATH${NC}"
+        exit 1
+    fi
+    
+    # Check if script is executable
+    if [ ! -x "$SCRIPT_PATH" ]; then
+        echo -e "${YELLOW}Making script executable...${NC}"
+        chmod +x "$SCRIPT_PATH"
+    fi
+    
+    # Check if gcloud is available
+    if ! command -v gcloud >/dev/null 2>&1; then
+        echo -e "${RED}Error: gcloud CLI not found. Some tests will be skipped.${NC}"
+        GCLOUD_AVAILABLE=false
+    else
+        GCLOUD_AVAILABLE=true
+        echo -e "${GREEN}gcloud CLI found${NC}"
+    fi
+    
+    # Check if gcloud is authenticated
+    if [ "$GCLOUD_AVAILABLE" = true ]; then
+        if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | head -n1 >/dev/null 2>&1; then
+            echo -e "${YELLOW}Warning: gcloud not authenticated. Role tests will fail.${NC}"
+            GCLOUD_AUTH=false
+        else
+            GCLOUD_AUTH=true
+            echo -e "${GREEN}gcloud authenticated${NC}"
+        fi
+    else
+        GCLOUD_AUTH=false
+    fi
+}
+
+# Function to write test results to file
+write_test_results() {
+    local results_file="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    {
+        echo "Enhanced GCP IAM Tool - Test Results"
+        echo "Generated: $timestamp"
+        echo "Script tested: $SCRIPT_PATH"
+        echo "========================================"
+        echo ""
+        echo "SUMMARY:"
+        echo "Total tests: $TESTS_TOTAL"
+        echo "Passed: $TESTS_PASSED"
+        echo "Failed: $TESTS_FAILED"
+        echo "Success rate: $(( TESTS_PASSED * 100 / TESTS_TOTAL ))%"
+        echo ""
+        
+        if [ $TESTS_FAILED -gt 0 ]; then
+            echo "DETAILED FAILURE ANALYSIS:"
+            echo "========================================="
+            for result in "${TEST_RESULTS[@]}"; do
+                if [[ "$result" =~ ^FAIL ]]; then
+                    echo -e "$result"
+                    echo ""
+                fi
+            done
+        fi
+        
+        echo "ALL TEST RESULTS SUMMARY:"
+        echo "========================================="
+        for result in "${TEST_RESULTS[@]}"; do
+            # Only show the first line for summary (test name and basic result)
+            local summary_line=$(echo -e "$result" | head -1)
+            echo "  $summary_line"
+        done
+        echo ""
+        echo "Test completed at: $(date '+%Y-%m-%d %H:%M:%S')"
+    } > "$results_file"
+    
+    track_file "$results_file"
+}
+
+# Function to print test summary
+print_summary() {
+    echo ""
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}TEST SUMMARY${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "Total tests: ${YELLOW}$TESTS_TOTAL${NC}"
+    echo -e "Passed: ${GREEN}$TESTS_PASSED${NC}"
+    echo -e "Failed: ${RED}$TESTS_FAILED${NC}"
+    
+    if [ $TESTS_TOTAL -gt 0 ]; then
+        local success_rate=$(( TESTS_PASSED * 100 / TESTS_TOTAL ))
+        echo -e "Success rate: ${YELLOW}${success_rate}%${NC}"
+    fi
+    
+    if [ $TESTS_FAILED -gt 0 ]; then
+        echo ""
+        echo -e "${RED}Failed tests:${NC}"
+        for result in "${TEST_RESULTS[@]}"; do
+            if [[ "$result" =~ ^FAIL ]]; then
+                echo -e "${RED}  $result${NC}"
+            fi
+        done
+    fi
+    
+    # Write results to file if specified
+    if [ -n "$TEST_RESULTS_FILE" ]; then
+        write_test_results "$TEST_RESULTS_FILE"
+        echo ""
+        echo -e "${BLUE}📄 Test results written to: $TEST_RESULTS_FILE${NC}"
+    fi
+    
+    echo ""
+    if [ $TESTS_FAILED -eq 0 ]; then
+        echo -e "${GREEN}🎉 ALL TESTS PASSED!${NC}"
+        exit 0
+    else
+        echo -e "${RED}❌ SOME TESTS FAILED${NC}"
+        exit 1
+    fi
+}
+
+# Function to parse command line arguments
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -r|--results)
+                if [ -z "${2:-}" ]; then
+                    echo -e "${RED}Error: Results file not specified${NC}" >&2
+                    exit 2
+                fi
+                TEST_RESULTS_FILE="$2"
+                shift 2
+                ;;
+            --no-cleanup)
+                CLEANUP_ON_EXIT=false
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -*)
+                echo -e "${RED}Error: Unknown option $1${NC}" >&2
+                echo "" >&2
+                usage >&2
+                exit 2
+                ;;
+            *)
+                if [ -z "$SCRIPT_PATH" ]; then
+                    SCRIPT_PATH="$1"
+                else
+                    echo -e "${RED}Error: Multiple script paths specified${NC}" >&2
+                    echo "" >&2
+                    usage >&2
+                    exit 2
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    # Set default script path if not specified
+    if [ -z "$SCRIPT_PATH" ]; then
+        SCRIPT_PATH="./gcp-iam-util"
+    fi
+    
+    # Validate results file path if specified
+    if [ -n "$TEST_RESULTS_FILE" ]; then
+        local results_dir=$(dirname "$TEST_RESULTS_FILE")
+        if [ ! -d "$results_dir" ]; then
+            echo -e "${RED}Error: Directory '$results_dir' does not exist${NC}" >&2
+            exit 2
+        fi
+        
+        # Check if file is writable
+        if [ -e "$TEST_RESULTS_FILE" ] && [ ! -w "$TEST_RESULTS_FILE" ]; then
+            echo -e "${RED}Error: File '$TEST_RESULTS_FILE' is not writable${NC}" >&2
+            exit 2
+        fi
+    fi
+}
+
+# Main test execution
+main() {
+    # Parse command line arguments
+    parse_arguments "$@"
+    
+    echo -e "${CYAN}Starting tests for Enhanced GCP IAM Tool v2.0.0${NC}"
+    echo -e "${BLUE}Script path: $SCRIPT_PATH${NC}"
+    if [ -n "$TEST_RESULTS_FILE" ]; then
+        echo -e "${BLUE}Results file: $TEST_RESULTS_FILE${NC}"
+    fi
+    if [ "$CLEANUP_ON_EXIT" = false ]; then
+        echo -e "${BLUE}Cleanup: disabled${NC}"
+    fi
+    
+    # Check prerequisites
+    check_prerequisites
+    
+    # Create test files
+    create_test_files
+    
+    # Test 1: Global Help and Usage Tests
+    print_test_header "GLOBAL HELP AND USAGE TESTS"
+    
+    run_test "Global help option (-h)" 0 "$SCRIPT_PATH" -h
+    run_test "Global help option (--help)" 0 "$SCRIPT_PATH" --help
+    run_test "Version option (-v)" 0 "$SCRIPT_PATH" -v
+    run_test "Version option (--version)" 0 "$SCRIPT_PATH" --version
+    run_test "No arguments" 2 "$SCRIPT_PATH"
+    run_test "Unknown sub-command" 2 "$SCRIPT_PATH" unknown-command
+    run_test "Unknown global option" 2 "$SCRIPT_PATH" --unknown-option
+    
+    # Test 1.5: Roles Command Group Tests
+    print_test_header "ROLES COMMAND GROUP TESTS"
+    
+    run_test "roles help (-h)" 0 "$SCRIPT_PATH" roles -h
+    run_test "roles help (--help)" 0 "$SCRIPT_PATH" roles --help
+    run_test "roles no sub-command" 2 "$SCRIPT_PATH" roles
+    run_test "roles unknown sub-command" 2 "$SCRIPT_PATH" roles unknown-subcommand
+    
+    # Test 2: roles is-subset Sub-command Help and Usage
+    print_test_header "ROLES IS-SUBSET SUB-COMMAND HELP AND USAGE"
+    
+    run_test "roles is-subset help (-h)" 0 "$SCRIPT_PATH" roles is-subset -h
+    run_test "roles is-subset help (--help)" 0 "$SCRIPT_PATH" roles is-subset --help
+    run_test "roles is-subset no arguments" 2 "$SCRIPT_PATH" roles is-subset
+    run_test "roles is-subset single argument (SOURCE only)" 2 "$SCRIPT_PATH" roles is-subset test_perms_small.txt
+    run_test "roles is-subset unknown option" 2 "$SCRIPT_PATH" roles is-subset --unknown-option test_perms_small.txt test_perms_large.txt
+    
+    # Test 3: roles get-permissions Sub-command Help and Usage
+    print_test_header "ROLES GET-PERMISSIONS SUB-COMMAND HELP AND USAGE"
+    
+    run_test "roles get-permissions help (-h)" 0 "$SCRIPT_PATH" roles get-permissions -h
+    run_test "roles get-permissions help (--help)" 0 "$SCRIPT_PATH" roles get-permissions --help
+    run_test "roles get-permissions no arguments" 2 "$SCRIPT_PATH" roles get-permissions
+    run_test "roles get-permissions unknown option" 2 "$SCRIPT_PATH" roles get-permissions --unknown-option test_perms_small.txt
+    
+    # Test 4: roles is-subset Single Target Tests (Backward Compatibility)
+    print_test_header "ROLES IS-SUBSET SINGLE TARGET TESTS"
+    
+    run_test "File vs File (small subset of large)" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_large.txt
+    run_test "File vs File (large not subset of small)" 1 "$SCRIPT_PATH" roles is-subset test_perms_large.txt test_perms_small.txt
+    run_test "File vs File (identical)" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_small.txt
+    run_test "Empty file vs File" 0 "$SCRIPT_PATH" roles is-subset test_perms_empty.txt test_perms_small.txt
+    run_test "File vs Empty file" 1 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_empty.txt
+    run_test "Semicolon-separated file vs large file" 0 "$SCRIPT_PATH" roles is-subset test_perms_semicolon.txt test_perms_large.txt
+    
+    # Test 5: roles is-subset Multi-Target Tests
+    print_test_header "ROLES IS-SUBSET MULTI-TARGET TESTS"
+    
+    run_test "Spanning perms vs 3 targets (should pass)" 0 "$SCRIPT_PATH" roles is-subset test_perms_spanning.txt test_perms_target1.txt test_perms_target2.txt test_perms_target3.txt
+    run_test "Small vs 2 targets (should pass)" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_target1.txt test_perms_medium.txt
+    run_test "Medium vs 2 small targets (should fail)" 1 "$SCRIPT_PATH" roles is-subset test_perms_medium.txt test_perms_small.txt test_perms_target1.txt
+    run_test "Large vs 3 targets (should fail)" 1 "$SCRIPT_PATH" roles is-subset test_perms_large.txt test_perms_target1.txt test_perms_target2.txt test_perms_target3.txt
+    run_test "Small vs 3 identical targets" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_small.txt test_perms_small.txt test_perms_small.txt
+    run_test "Empty vs multiple targets" 0 "$SCRIPT_PATH" roles is-subset test_perms_empty.txt test_perms_small.txt test_perms_medium.txt
+    
+    # Test 6: roles is-subset Output File Tests
+    print_test_header "ROLES IS-SUBSET OUTPUT FILE TESTS"
+    
+    track_output_file "test_missing_single.txt"
+    run_test "Output file with missing perms (single target)" 1 "$SCRIPT_PATH" roles is-subset -o test_missing_single.txt test_perms_large.txt test_perms_small.txt
+    track_output_file "test_missing_multi.txt"
+    run_test "Output file with missing perms (multi-target)" 1 "$SCRIPT_PATH" roles is-subset -o test_missing_multi.txt test_perms_large.txt test_perms_small.txt test_perms_medium.txt
+    track_output_file "test_missing_empty.txt"
+    run_test "Output file with no missing perms" 0 "$SCRIPT_PATH" roles is-subset -o test_missing_empty.txt test_perms_small.txt test_perms_large.txt
+    
+    # Check if output files were created
+    for output_file in test_missing_single.txt test_missing_multi.txt test_missing_empty.txt; do
+        if [ -f "$output_file" ]; then
+            local line_count=$(wc -l < "$output_file" 2>/dev/null || echo "0")
+            echo -e "${GREEN}✅ $output_file created with $line_count permissions${NC}"
+        else
+            echo -e "${RED}❌ $output_file not created${NC}"
+        fi
+    done
+    
+    # Test 7: roles is-subset Project Option Tests
+    print_test_header "ROLES IS-SUBSET PROJECT OPTION TESTS"
+    
+    run_test "Project option without value" 2 "$SCRIPT_PATH" roles is-subset -p
+    run_test "Project option with file targets" 0 "$SCRIPT_PATH" roles is-subset -p fake-project test_perms_small.txt test_perms_large.txt
+    track_output_file "test_mixed_options.txt"
+    run_test "Mixed options" 0 "$SCRIPT_PATH" roles is-subset -p fake-project -o test_mixed_options.txt test_perms_small.txt test_perms_large.txt
+    
+    # Test 8: roles get-permissions Basic Tests
+    print_test_header "ROLES GET-PERMISSIONS BASIC TESTS"
+    
+    run_test "Single file input" 0 "$SCRIPT_PATH" roles get-permissions test_perms_small.txt
+    run_test "Multiple file inputs" 0 "$SCRIPT_PATH" roles get-permissions test_perms_small.txt test_perms_medium.txt
+    run_test "Empty file input" 0 "$SCRIPT_PATH" roles get-permissions test_perms_empty.txt
+    run_test "Semicolon-separated file" 0 "$SCRIPT_PATH" roles get-permissions test_perms_semicolon.txt
+    run_test "File with duplicates" 0 "$SCRIPT_PATH" roles get-permissions test_perms_duplicates.txt
+    run_test "Nonexistent file" 2 "$SCRIPT_PATH" roles get-permissions nonexistent.txt
+    
+    # Test 9: roles get-permissions Output File Tests
+    print_test_header "ROLES GET-PERMISSIONS OUTPUT FILE TESTS"
+    
+    track_output_file "test_output_single.txt"
+    run_test "Single file to output" 0 "$SCRIPT_PATH" roles get-permissions -o test_output_single.txt test_perms_small.txt
+    track_output_file "test_output_multi.txt"
+    run_test "Multiple files to output" 0 "$SCRIPT_PATH" roles get-permissions -o test_output_multi.txt test_perms_small.txt test_perms_medium.txt test_perms_target1.txt
+    track_output_file "test_output_empty.txt"
+    run_test "Empty file to output" 0 "$SCRIPT_PATH" roles get-permissions -o test_output_empty.txt test_perms_empty.txt
+    track_output_file "test_output_dedup.txt"
+    run_test "Duplicates to output (should deduplicate)" 0 "$SCRIPT_PATH" roles get-permissions -o test_output_dedup.txt test_perms_duplicates.txt test_perms_small.txt
+    
+    # Check output files and verify deduplication
+    if [ -f test_output_dedup.txt ]; then
+        local unique_count=$(sort test_output_dedup.txt | uniq | wc -l | tr -d ' ')
+        local total_count=$(wc -l < test_output_dedup.txt | tr -d ' ')
+        if [ "$unique_count" -eq "$total_count" ]; then
+            echo -e "${GREEN}✅ Deduplication working: $total_count unique permissions${NC}"
+        else
+            echo -e "${RED}❌ Deduplication failed: $total_count total, $unique_count unique${NC}"
+        fi
+    fi
+    
+    # Test 10: roles get-permissions Project Option Tests
+    print_test_header "ROLES GET-PERMISSIONS PROJECT OPTION TESTS"
+    
+    run_test "Project option without value" 2 "$SCRIPT_PATH" roles get-permissions -p
+    run_test "Project option with file" 0 "$SCRIPT_PATH" roles get-permissions -p fake-project test_perms_small.txt
+    track_output_file "test_output_project.txt"
+    run_test "Project with output file" 0 "$SCRIPT_PATH" roles get-permissions -p fake-project -o test_output_project.txt test_perms_medium.txt
+    
+    # Test 11: Edge Cases and Error Handling
+    print_test_header "EDGE CASES AND ERROR HANDLING"
+    
+    # Test with file names containing spaces
+    echo "resourcemanager.projects.get" > "test file with spaces.txt"
+    track_file "test file with spaces.txt"
+    run_test "File with spaces (check-subset)" 0 "$SCRIPT_PATH" roles is-subset "test file with spaces.txt" test_perms_large.txt
+    run_test "File with spaces (get-permissions)" 0 "$SCRIPT_PATH" roles get-permissions "test file with spaces.txt"
+    
+    # Test output to nonexistent directory
+    run_test "Output to nonexistent directory (check-subset)" 2 "$SCRIPT_PATH" roles is-subset -o /nonexistent/dir/output.txt test_perms_small.txt test_perms_large.txt
+    run_test "Output to nonexistent directory (get-permissions)" 2 "$SCRIPT_PATH" roles get-permissions -o /nonexistent/dir/output.txt test_perms_small.txt
+    
+    # Test with read-only output file (if we can create one)
+    touch test_readonly.txt
+    track_file "test_readonly.txt"
+    chmod 444 test_readonly.txt 2>/dev/null || true
+    if [ ! -w test_readonly.txt ]; then
+        run_test "Read-only output file (check-subset)" 2 "$SCRIPT_PATH" roles is-subset -o test_readonly.txt test_perms_small.txt test_perms_large.txt
+        run_test "Read-only output file (get-permissions)" 2 "$SCRIPT_PATH" roles get-permissions -o test_readonly.txt test_perms_small.txt
+    fi
+    
+    # Test argument parsing edge cases
+    run_test "Option at end (check-subset)" 2 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_large.txt -o
+    run_test "Option at end (get-permissions)" 2 "$SCRIPT_PATH" roles get-permissions test_perms_small.txt -o
+    
+    # Test 12: Integration Tests
+    print_test_header "INTEGRATION TESTS"
+    
+    # Test complex scenarios with all options
+    track_output_file "test_integration_check.txt"
+    run_test "check-subset all options" 1 "$SCRIPT_PATH" roles is-subset -p fake-project -o test_integration_check.txt test_perms_large.txt test_perms_small.txt test_perms_medium.txt
+    track_output_file "test_integration_get.txt"
+    run_test "get-permissions all options" 0 "$SCRIPT_PATH" roles get-permissions -p fake-project -o test_integration_get.txt test_perms_small.txt test_perms_medium.txt
+    
+    # Test mixed file types and sizes
+    run_test "Mixed file sizes (check-subset)" 0 "$SCRIPT_PATH" roles is-subset test_perms_spanning.txt test_perms_empty.txt test_perms_large.txt test_perms_semicolon.txt
+    run_test "Mixed file sizes (get-permissions)" 0 "$SCRIPT_PATH" roles get-permissions test_perms_empty.txt test_perms_small.txt test_perms_semicolon.txt test_perms_duplicates.txt
+    
+    # Test 13: Live Role Tests (only if gcloud is available and authenticated)
+    if [ "$GCLOUD_AUTH" = true ]; then
+        print_test_header "LIVE ROLE TESTS (GCLOUD)"
+        
+        # Test basic predefined roles
+        run_test_with_output "get-permissions roles/viewer" 0 "success.*permissions" "$SCRIPT_PATH" roles get-permissions roles/viewer
+        run_test_with_output "check-subset roles/viewer vs roles/editor" 0 "success.*all permissions" "$SCRIPT_PATH" roles is-subset roles/viewer roles/editor
+        run_test_with_output "check-subset roles/editor vs roles/viewer" 1 "failure.*permissions not in" "$SCRIPT_PATH" roles is-subset roles/editor roles/viewer
+        
+        # Test multiple roles
+        run_test_with_output "get-permissions multiple roles" 0 "success.*permissions" "$SCRIPT_PATH" roles get-permissions roles/viewer roles/editor
+        run_test_with_output "check-subset vs multiple roles" 0 "success.*all permissions" "$SCRIPT_PATH" roles is-subset roles/viewer roles/editor roles/admin
+        
+        # Test invalid role
+        run_test_with_output "Invalid role (check-subset)" 2 "error.*unable to get permissions" "$SCRIPT_PATH" roles is-subset roles/nonexistent roles/viewer
+        run_test_with_output "Invalid role (get-permissions)" 2 "error.*unable to get permissions" "$SCRIPT_PATH" roles get-permissions roles/nonexistent
+        
+        # Test mixed file and role
+        run_test "File vs role (outcome depends on content)" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt roles/editor || run_test "File vs role (not subset)" 1 "$SCRIPT_PATH" roles is-subset test_perms_small.txt roles/editor
+        run_test "Mixed file and role (get-permissions)" 0 "$SCRIPT_PATH" roles get-permissions test_perms_small.txt roles/viewer
+        
+        # Test with output files
+        track_output_file "test_role_output.txt"
+        run_test "Role to output file" 0 "$SCRIPT_PATH" roles get-permissions -o test_role_output.txt roles/viewer
+        track_output_file "test_role_missing.txt"
+        run_test "Role subset with output" 1 "$SCRIPT_PATH" roles is-subset -o test_role_missing.txt roles/editor roles/viewer
+        
+    else
+        echo -e "${YELLOW}Skipping live role tests - gcloud not available or not authenticated${NC}"
+    fi
+    
+    # Test 14: Performance and Stress Tests
+    print_test_header "PERFORMANCE AND STRESS TESTS"
+    
+    # Test with many targets
+    run_test "Many targets (check-subset)" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_target1.txt test_perms_target2.txt test_perms_target3.txt test_perms_medium.txt test_perms_large.txt test_perms_empty.txt
+    
+    # Test with many sources
+    run_test "Many sources (get-permissions)" 0 "$SCRIPT_PATH" roles get-permissions test_perms_small.txt test_perms_medium.txt test_perms_target1.txt test_perms_target2.txt test_perms_target3.txt test_perms_semicolon.txt
+    
+    # Test duplicate targets/sources
+    run_test "Duplicate targets" 0 "$SCRIPT_PATH" roles is-subset test_perms_small.txt test_perms_large.txt test_perms_large.txt test_perms_large.txt
+    run_test "Duplicate sources" 0 "$SCRIPT_PATH" roles get-permissions test_perms_small.txt test_perms_small.txt test_perms_medium.txt
+    
+    # Print summary (cleanup will happen automatically via trap)
+    print_summary
+}
+
+# Run main function
+main "$@"
