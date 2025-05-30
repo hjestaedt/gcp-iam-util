@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091
+set -euo pipefail
+
+# Get the script name and directory
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Check if we're running from a symlink installation (.d directory) or development (lib directory)
+if [ -d "$SCRIPT_DIR/$SCRIPT_NAME.d" ]; then
+    LIB_DIR="$SCRIPT_DIR/$SCRIPT_NAME.d"
+else
+    LIB_DIR="$SCRIPT_DIR/lib"
+fi
+
+source "$LIB_DIR/common.sh"
+source "$LIB_DIR/gcloud.sh"
+source "$LIB_DIR/permissions.sh"
+source "$LIB_DIR/cli.sh"
+source "$LIB_DIR/commands/roles/is-subset.sh"
+source "$LIB_DIR/commands/roles/get-permissions.sh"
+source "$LIB_DIR/commands/roles.sh"
+
+main() {
+    if [ $# -eq 0 ]; then
+        usage_error "no command specified" usage_global 2
+    fi
+    
+    case $1 in
+        -h|--help) usage_global; exit 0 ;;
+        -v|--version) version; exit 0 ;;
+        roles) shift; cmd_roles "$@"; exit $? ;;
+        *) echo "" >&2; usage_global >&2; exit_error "unknown command '$1'" ;;
+    esac
+}
+
+main "$@" 
